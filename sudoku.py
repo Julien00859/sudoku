@@ -4,18 +4,6 @@ import random
 import re
 import textwrap
 
-hard = """\
-7   1   9
-      41 
-5 9  6  7
-        2
-18    9 5
-     5 8 
-  284  9 
- 6    158
-   6     
-"""
-
 def sq_from_rc(row, col):
     return row // 3 * 3 + col // 3
 
@@ -90,10 +78,10 @@ class Sudoku(_Grid):
         return cls([list(line) for line in grid])
 
     @classmethod
-    def from_database(cls, no):
+    def from_database(cls, grid_no):
         """ Open and parse the 50-grids sodoku.txt file, return the n°no grid. """
         with open(__file__[:-2] + 'txt') as file:
-            file.seek(108 * no + 9)
+            file.seek(108 * (grid_no - 1) + 9)
             return cls.from_snapshot(file.read(89))
 
     def __str__(self):
@@ -130,11 +118,9 @@ class Sudoku(_Grid):
     def is_valid(self):
         """ Verify that the grid is valid so far. """
         for i in range(9):
-            if (
-                self._contains_duplicate(self.get_square(i))
+            if (self._contains_duplicate(self.get_square(i))
                 or self._contains_duplicate(self.get_row(i))
-                or self._contains_duplicate(self.get_col(i))
-            ):
+                or self._contains_duplicate(self.get_col(i))):
                 return False
         return True
 
@@ -152,10 +138,6 @@ class Sudoku(_Grid):
         free_spots = [i for i, v in enumerate(row) if v == '0']
         if len(missing_set) != len(free_spots):
             raise ValueError("Invalid self")
-
-        if len(missing_set) == 1:
-            self.grid[row_no][free_spots[0]] = missing_set.pop()
-            found = True
 
         for missing in missing_set:
             fit = [
@@ -180,10 +162,6 @@ class Sudoku(_Grid):
         if len(missing_set) != len(free_spots):
             raise ValueError("Invalid self")
 
-        if len(missing_set) == 1:
-            self.grid[free_spots[0]][col_no] = missing_set.pop()
-            found = True
-
         for missing in missing_set:
             fit = [
                 row_no
@@ -206,10 +184,6 @@ class Sudoku(_Grid):
         free_spots = [rc_from_sq(sq_no, i) for i, v in enumerate(square) if v == '0']
         if len(missing_set) != len(free_spots):
             raise ValueError("Invalid self")
-
-        if len(missing_set) == 1:
-            self.grid[free_spots[0][0]][free_spots[0][1]] = missing_set.pop()
-            found = True
 
         for missing in missing_set:
             fit = [
@@ -285,13 +259,12 @@ class Sudoku(_Grid):
 
 if __name__ == '__main__':
     import time
-    for dbno in range(5, 6):
-        sudo = Sudoku.from_database(dbno)
-        print(sudo)
+    for grid_no in range(1, 54):
+        sudo = Sudoku.from_database(grid_no)
+        #assert sudo.is_valid()
         chrono = time.time()
         depth = sudo.solve()
         elapsed = time.time() - chrono
-        print(f"Solved n°{dbno+1} in {elapsed:.03f}s guessing {depth} times")
+        assert sudo.is_valid()
         assert sudo.is_solved()
-    assert sudo.is_valid()
-
+        print(f"Solved {grid_no} in {elapsed:.03f}s guessing {depth} times")
