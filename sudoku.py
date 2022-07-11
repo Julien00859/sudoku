@@ -1,8 +1,24 @@
-import collections
-import contextlib
-import random
+# Original author Peter Norvig
+# http://norvig.com/sudoku.html
+
 import re
-import textwrap
+
+GRID_9x9 = """
+A1 A2 A3|A4 A5 A6|A7 A8 A9
+C1 C2 C3|C4 C5 C6|C7 C8 C9
+B1 B2 B3|B4 B5 B6|B7 B8 B9
+--------+--------+---------
+D1 D2 D3|D4 D5 D6|D7 D8 D9
+E1 E2 E3|E4 E5 E6|E7 E8 E9
+F1 F2 F3|F4 F5 F6|F7 F8 F9
+--------+--------+---------
+G1 G2 G3|G4 G5 G6|G7 G8 G9
+H1 H2 H3|H4 H5 H6|H7 H8 H9
+I1 I2 I3|I4 I5 I6|I7 I8 I9
+"""
+
+def cross(a, b):
+    return frozenset([aa + bb for aa in a for bb in b])
 
 def sq_from_rc(row, col):
     return row // 3 * 3 + col // 3
@@ -10,12 +26,118 @@ def sq_from_rc(row, col):
 def rc_from_sq(sq, i=0):
     return sq // 3 * 3 + i // 3, sq % 3 * 3 + i % 3
 
-class _Grid:
+digits = '123456789'
+row_digits = 'ABCDEFGHI'
+col_digits = digits
+
+rows = [cross(rd, col_digits) for rd in row_digits]
+cols = [cross(row_digits, cd) for cd in col_digits]
+sqrs = [cross(row_digits[ri:ri+3], col_digits[ci:ci+3])
+        for ri in range(0, 9, 3) for ci in range(0, 9, 3)]
+
+cells = cross(row_digits, col_digits)
+peers_of = {
+    cell: (
+        rows[ri := ord(cell[0]) - 65]
+        | cols[ci := ord(cell[1]) - 49]
+        | sqrs[sq_from_rc(ri, ci)]
+    ) - {cell} for cell in cells
+}
+
+class _Solver:
+    def __init__(self):
+        self.guess_count = 0
+        self.max_depth = 0
+        self.candidates = {cell: digits for cell in cells}
+
+    def assign(self, cell, digit):
+        # Instead of assigning the digit to the cell, we eliminate all
+        # the other digits from the cell, ultimately this only leaves
+        # the given digit in the cell.
+        other_digits = self.candidates[cell].replace(digit, '')
+        for other_digit in other_digits:
+            self.eliminate(cell, other_digit)
+        assert self.candidates[cell] == digit
+
+    def eliminate(self, cell, digit):
+        # The digit doesn't fit here, remove it from the candidates.
+        self.candidates[cell] = self.candidates[cell].replace(digit, '')
+
+        # This is no candidate left for this cell, the puzzle is
+        # impossible or we guessed a wrong digit before.
+        if len(self.candidates[cell]) == 0:
+            raise ValueError("No solution.")
+
+        # There is a single candidate left in this cell making it the
+        # right digit in this cell. That digit cannot go in any of the
+        # peers, eliminate it from the peers.
+        if len(self.candidates[cell]) == 1:
+            for peer in peers_of[cell]:
+                if self.candidates[cell] in self.candidates[peer]:
+                    self.eliminate(peer, self.candidates[cell])
+
+        # The digit doesn't fit here but it must fit in one of the peer.
+        # Determine the peers where the digit would fit.
+        peers = [peer for peer in peers_of[cell] if digit in self.candidates[peer]]
+
+        # There is no peer where the digit would fit, the puzzle is
+        # impossible or we guessed a wrong digit before.
+        if len(peers) == 0:
+            raise ValueError("No solution.")
+
+        # There is a single peer where the digit can fit, assign it to
+        # that peer.
+        if len(peers) == 1:
+            self.assign(peers[0], digit)
+
+    def guess(self, depth=1):
+        self.guess_count += 1
+        self.max_depth = max(self.max_depth, depth)
+
+        # Find a cell with a minimum of candidates then just assume
+        # one of the candidate is the correct value and continue the
+        # puzzle. In case we are proven wrong, just try another
+        # candidate.
+        cell, cands = min(((cell, cands) for cell, cands in self.candidates.items() if len(cands) > 1), key=lambda x: len(x[1]))
+
+        for candidate in cands:
+            frozen_candidates = self.candidates.copy()
+            try:
+                self.assign(cell, candidate)
+                if self.is_solved():
+                    return depth
+                return self.guess(depth + 1)
+            except ValueError:
+                self.candidates = frozen_candidates
+
+        # Truly unsolvable.
+        raise ValueError("No solution.")
+
+    def is_solved(self):
+        return all(len(candidates) == 1 for candidates in self.candidates.values())
+
+    def __str__(self):
+        return re.sub(r'(\w\d)', r'{\1} ', GRID_9x9).format(**{
+            cell: value if len(value) == 1 else '.'
+            for cell, value in self.candidates.items()
+        })
+
+class Sudoku:
+
     def __init__(self, grid):
-        assert len(grid) == 9
-        for line in grid:
-            assert len(line) == 9
         self.grid = grid
+
+    @classmethod
+    def from_snapshot(cls, snapshot):
+        snapshot = re.sub(r'[^0-9 \.]', '', snapshot)
+        snapshot = re.sub(r'[ \.]', '0', snapshot)
+        return cls([list(snapshot[i:i+9]) for i in range(0, 81, 9)])
+
+    @classmethod
+    def from_database(cls, grid_no):
+        with open(__file__[:-2] + 'txt') as file:
+            file.seek(108 * (grid_no - 1) + 9)
+            return cls.from_snapshot(file.read(89))
 
     def get_row(self, row):
         return self.grid[row]
@@ -37,80 +159,13 @@ class _Grid:
             g[row+2][col], g[row+2][col+1], g[row+2][col+2],
         ]
 
-
-class Sudoku(_Grid):
-    @classmethod
-    def from_snapshot(cls, snapshot):
-        snapshot = re.sub(r'[^0-9\n]', '0', snapshot)
-        return cls([list(line) for line in snapshot.splitlines()])
-
-    @classmethod
-    def new_solved_grid(cls):
-        """ Create a solved 9x9 random grid. """
-        # generate a solved grid that is garanteed to be valid
-        grid = []
-        seed = collections.deque('123456789')
-        random.shuffle(seed)
-        for _ in range(3):
-            for _ in range(3):
-                grid.append(list(seed))
-                seed.rotate(3)
-            seed.rotate(1)
-
-        # shuffle the grid 
-        for _ in range(2):
-            for row in range(3):
-                for _ in range(random.randint(2, 3)):
-                    src = random.randint(0, 2)
-                    dst = random.randint(0, 2)
-                    grid[row*3+src], grid[row*3+dst] = grid[row*3+dst], grid[row*3+src]
-
-            for _ in range(random.randint(2, 3)):
-                src = random.randint(0, 2)
-                dst = random.randint(0, 2)
-                (grid[src*3], grid[src*3+1], grid[src*3+2],
-                 grid[dst*3], grid[dst*3+1], grid[dst*3+2]) = (
-                 grid[dst*3], grid[dst*3+1], grid[dst*3+2],
-                 grid[src*3], grid[src*3+1], grid[src*3+2])
-
-            grid = list(zip(*grid))
-
-        return cls([list(line) for line in grid])
-
-    @classmethod
-    def from_database(cls, grid_no):
-        """ Open and parse the 50-grids sodoku.txt file, return the n°no grid. """
-        with open(__file__[:-2] + 'txt') as file:
-            file.seek(108 * (grid_no - 1) + 9)
-            return cls.from_snapshot(file.read(89))
-
-    def __str__(self):
-        g = self.grid
-        return textwrap.dedent(f"""\
-            {g[0][0]}{g[0][1]}{g[0][2]}|{g[0][3]}{g[0][4]}{g[0][5]}|{g[0][6]}{g[0][7]}{g[0][8]}
-            {g[1][0]}{g[1][1]}{g[1][2]}|{g[1][3]}{g[1][4]}{g[1][5]}|{g[1][6]}{g[1][7]}{g[1][8]}
-            {g[2][0]}{g[2][1]}{g[2][2]}|{g[2][3]}{g[2][4]}{g[2][5]}|{g[2][6]}{g[2][7]}{g[2][8]}
-            ---+---+---
-            {g[3][0]}{g[3][1]}{g[3][2]}|{g[3][3]}{g[3][4]}{g[3][5]}|{g[3][6]}{g[3][7]}{g[3][8]}
-            {g[4][0]}{g[4][1]}{g[4][2]}|{g[4][3]}{g[4][4]}{g[4][5]}|{g[4][6]}{g[4][7]}{g[4][8]}
-            {g[5][0]}{g[5][1]}{g[5][2]}|{g[5][3]}{g[5][4]}{g[5][5]}|{g[5][6]}{g[5][7]}{g[5][8]}
-            ---+---+---
-            {g[6][0]}{g[6][1]}{g[6][2]}|{g[6][3]}{g[6][4]}{g[6][5]}|{g[6][6]}{g[6][7]}{g[6][8]}
-            {g[7][0]}{g[7][1]}{g[7][2]}|{g[7][3]}{g[7][4]}{g[7][5]}|{g[7][6]}{g[7][7]}{g[7][8]}
-            {g[8][0]}{g[8][1]}{g[8][2]}|{g[8][3]}{g[8][4]}{g[8][5]}|{g[8][6]}{g[8][7]}{g[8][8]}
-            """
-        ).replace('0', '.')
-
-    def __repr__(self):
-        return "\n".join("".join(line) for line in self.grid)
-
     def is_solved(self):
         """ Verify that the grid is complete and valid. """
         for i in range(9):
             if not (
-                sorted(self.get_square(i)) == list('123456789')
-                and sorted(self.get_col(i)) == list('123456789')
-                and sorted(self.get_row(i)) == list('123456789')
+                sorted(self.get_square(i)) == list(digits)
+                and sorted(self.get_col(i)) == list(digits)
+                and sorted(self.get_row(i)) == list(digits)
             ):
                 return False
         return True
@@ -126,135 +181,39 @@ class Sudoku(_Grid):
 
     @staticmethod
     def _contains_duplicate(line):
-        c = collections.Counter(line)
-        c.pop('0', None)
-        return c.most_common(1)[0][1] != 1
+        return any(line.count(digit) > 1 for digit in line if digit != '0')
 
-    def _solve_row(self, row_no):
-        found = False
-        row = self.get_row(row_no)
-        known_set = {x for x in row if x != '0'}
-        missing_set = set("123456789") - known_set
-        free_spots = [i for i, v in enumerate(row) if v == '0']
-        if len(missing_set) != len(free_spots):
-            raise ValueError("Invalid self")
+    def solve(self):
+        solver = _Solver()
+        depth = 0
+        for rn, rd in zip(range(9), row_digits):
+            for cn, cd in zip(range(9), col_digits):
+                if self.grid[rn][cn] != '0':
+                    solver.assign(rd + cd, self.grid[rn][cn])
+        if not solver.is_solved():
+            depth += solver.guess()
+        for rn, rd in zip(range(9), row_digits):
+            for cn, cd in zip(range(9), col_digits):
+                self.grid[rn][cn] = solver.candidates[rd + cd]
 
-        for missing in missing_set:
-            fit = [
-                col_no
-                for col_no in free_spots
-                if missing not in self.get_square_rc(row_no, col_no)
-                and missing not in self.get_col(col_no)
-            ]
-            if len(fit) == 1:
-                self.grid[row_no][fit[0]] = missing
-                free_spots.remove(fit[0])
-                found = True
+        assert self.is_valid()
+        assert self.is_solved()
 
-        return found
+        return (depth, solver.max_depth, solver.guess_count)
 
-    def _solve_col(self, col_no):
-        found = False
-        col = self.get_col(col_no)
-        known_set = {x for x in col if x != '0'}
-        missing_set = set("123456789") - known_set
-        free_spots = [i for i, v in enumerate(col) if v == '0']
-        if len(missing_set) != len(free_spots):
-            raise ValueError("Invalid self")
-
-        for missing in missing_set:
-            fit = [
-                row_no
-                for row_no in free_spots
-                if missing not in self.get_square_rc(row_no, col_no)
-                and missing not in self.get_row(row_no)
-            ]
-            if len(fit) == 1:
-                self.grid[fit[0]][col_no] = missing
-                free_spots.remove(fit[0])
-                found = True
-
-        return found
-
-    def _solve_square(self, sq_no):
-        found = False
-        square = self.get_square(sq_no)
-        known_set = {x for x in square if x != '0'}
-        missing_set = set("123456789") - known_set
-        free_spots = [rc_from_sq(sq_no, i) for i, v in enumerate(square) if v == '0']
-        if len(missing_set) != len(free_spots):
-            raise ValueError("Invalid self")
-
-        for missing in missing_set:
-            fit = [
-                (row_no, col_no)
-                for (row_no, col_no) in free_spots
-                if missing not in self.get_row(row_no)
-                and missing not in self.get_col(col_no)
-            ]
-            if len(fit) == 1:
-                free_spots.remove(fit[0])
-                self.grid[fit[0][0]][fit[0][1]] = missing
-                found = True
-
-        return found
-
-    def get_candidates(self, row_no, col_no):
-        return (
-            set("123456789")
-            - set(self.get_row(row_no))
-            - set(self.get_col(col_no))
-            - set(self.get_square_rc(row_no, col_no))
+    def __str__(self):
+        return "\n-----+-----+-----\n".join(
+            "\n".join(
+                "|".join(
+                    " ".join(
+                        row[i:i+3]
+                    ) for i in range(0, 9, 3)
+                ) for row in self.grid[j:j+3]
+            ) for j in range(0, 9, 3)
         )
 
-    def _solve_cell(self, row_no, col_no):
-        if len(candidates := self.get_candidates(row_no, col_no)) == 1:
-            self.grid[row_no][col_no] = candidates.pop()
-            return True
-        return False
-
-    def _guess_value(self, row_no, col_no, length, depth):
-        if len(candidates := self.get_candidates(row_no, col_no)) == length:
-            for candidate in candidates:
-                frozen_grid = [line.copy() for line in self.grid]
-                self.grid[row_no][col_no] = candidate
-                try:
-                    depth = self.solve(depth + 1, (row_no, col_no))
-                    if self.is_solved():
-                        return depth
-                except ValueError:
-                    pass
-                self.grid = frozen_grid
-
-        return depth
-
-    def solve(self, depth=0, guessed_rc=(0, 0)):
-        found = True
-        while not self.is_solved() and found:
-            found = False
-
-            for row_no in range(9):
-                found |= self._solve_row(row_no)
-
-            for col_no in range(9):
-                found |= self._solve_col(col_no)
-
-            for sq_no in range(9):
-                found |= self._solve_square(sq_no)
-
-            for row_no in range(9):
-                for col_no in range(9):
-                    if self.grid[row_no][col_no] == '0':
-                        found |= self._solve_cell(row_no, col_no)
-
-        if not self.is_solved():
-            for candidate_len in range(2, 9):
-                for row_no in range(guessed_rc[0], 9):
-                    for col_no in range(guessed_rc[1], 9):
-                        if self.grid[row_no][col_no] == '0':
-                            depth = self._guess_value(row_no, col_no, candidate_len, depth)
-
-        return depth
+    def __repr__(self):
+        return '\n'.join(''.join(line) for line in self.grid)
 
 
 if __name__ == '__main__':
@@ -266,12 +225,18 @@ if __name__ == '__main__':
 
     low, _, high = sys.argv[1].partition(':')
 
+    total_time = 0
     for grid_no in range(int(low), int(high) if high else int(low) + 1):
         sudo = Sudoku.from_database(grid_no)
-        #assert sudo.is_valid()
         chrono = time.time()
-        depth = sudo.solve()
+        depth, max_depth, total_guesses = sudo.solve()
         elapsed = time.time() - chrono
+        total_time += elapsed
         assert sudo.is_valid()
         assert sudo.is_solved()
-        print(f"Solved {grid_no} in {elapsed:.03f}s guessing {depth} times")
+        print(f"Solved grid n°{grid_no:<2d} in {elapsed:.03f}s; {depth=:<2d} {max_depth=:<2d} {total_guesses=}")
+
+    if high:
+        print(f"Total time: {total_time:.04f}s")
+    else:
+        print(repr(sudo))
