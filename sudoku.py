@@ -259,7 +259,14 @@ class Sudoku(_Grid):
 
 if __name__ == '__main__':
     import time
-    for grid_no in range(1, 54):
+    import sys
+
+    if len(sys.argv) < 2:
+        sys.exit(f"usage: {__file__} {{grid, low:high}}")
+
+    low, _, high = sys.argv[1].partition(':')
+
+    for grid_no in range(int(low), int(high) if high else int(low) + 1):
         sudo = Sudoku.from_database(grid_no)
         #assert sudo.is_valid()
         chrono = time.time()
